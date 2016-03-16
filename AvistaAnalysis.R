@@ -7,56 +7,56 @@ Sys.setenv(R_ZIPCMD= "C:/Rtools/bin/zip")
 #Load csv file
 fname <- file.choose()
 rawdata <- read.csv(fname,sep=",",header=TRUE)
+#rawdata <- rawdata[seq(1,NROW(rawdata),by=10),]
 #Filter out rows without data
-rawdata <- filter(rawdata,TES.CONN.ACTIVE_PWR.W !="No Data")
 #Only take the columns we are interested in raw
-if("TES.DC_INVERTER.V" %in% colnames(rawdata) ) {
-avistadata <- select(rawdata,Time,TES.STATE_OF_CHARGE_CAPY.PERCENT,TES.CONN.ACTIVE_PWR.W,TES.DC_INVERTER.V,TES.DC_INVERTER.IN_PWR.W)
-colnames(avistadata) <- c("Time","SOC","Power","Voltage","InverterPower")
-avistadata$Voltage <- as.numeric(as.character(avistadata$Voltage))
-} else {
-  avistadata <- select(rawdata,Time,TES.STATE_OF_CHARGE_CAPY.PERCENT,TES.CONN.ACTIVE_PWR.W)
-  colnames(avistadata) <- c("Time","SOC","Power")
-}
-#avistadata$Temp <- 0.25*(as.character(rawdata$TES_BATTERY1.STORAGE.TEMP.MAX.DEGC)+as.character(rawdata$TES_BATTERY1.STORAGE.TEMP.MIN.DEGC)+as.character(rawdata$TES_BATTERY2.STORAGE.TEMP.MAX.DEGC)+as.character(rawdata$TES_BATTERY2.STORAGE.TEMP.MIN.DEGC))
-avistadata$Temp <- rowMeans(rawdata[,c("TES_BATTERY1.STORAGE.TEMP.MAX.DEGC","TES_BATTERY2.STORAGE.TEMP.MIN.DEGC")])
-#avistadata$Temp <- 0
-#Name the columns for convenience
-avistadata$ConPower <- avistadata$Power
-avistadata$Power<-(as.numeric(as.character(rawdata$TES.BATTERY1.KW))+as.numeric(as.character(rawdata$TES.BATTERY2.KW)))*1000
+avistadata <- select(rawdata,DATETIME_STAMP,TES_STATE_OF_CHARGE_CAPY_PERCENT)
+colnames(avistadata) <- c("Time","SOC")
+avistadata$Temp <- rowMeans(rawdata[,c("TES_BATTERY1_STORAGE_TEMP_MAX_DEGC","TES_BATTERY2_STORAGE_TEMP_MIN_DEGC")])
+avistadata$Power<-(as.numeric(as.character(rawdata$TES_BATTERY1_KW))+as.numeric(as.character(rawdata$TES_BATTERY2_KW)))*1000
 #Convert from text into numerics
 avistadata$Power <- as.numeric(as.character(avistadata$Power))
-avistadata$SOC <- as.numeric(as.character(avistadata$SOC))
-avistadata$Time <- as.POSIXct(as.character(avistadata$Time),format="%m/%d/%Y %H:%M")
+avistadata$SOC <- as.numeric(as.character(avistadata$SOC))/100
+avistadata$Time <- as.POSIXct(as.character(avistadata$Time),format="%Y-%m-%d %T")
 #Add an hours column for convenience
-avistadata$Hours <- seq(from=0,length.out=length(avistadata$Time),by=(1/360))
+#avistadata$Hours <- seq(from=0,length.out=length(avistadata$Time),by=(0.00277777777777778))
+avistadata$Hours <- as.numeric(avistadata$Time)/60/60
+avistadata$Hours <- avistadata$Hours - avistadata$Hours[1]
+seq <- rle(avistadata$SOC)$lengths
+SOCmid <- round(cumsum(seq)-seq/2)
+y <- avistadata$SOC[SOCmid]
+x <- avistadata$Hours[SOCmid]
+avistadata$SOC <- approx(x,y,xout=avistadata$Hours)$y
+#avistadata$SOC <- spline(x,y,xout=avistadata$Hours)$y
+#avistadata$SOC <- loess(avistadata$SOC ~ avistadata$Hours,span=0.1)$fitted
 #Get rid of rows without any data
 avistadata <- avistadata[!is.na(avistadata$Power),]
-#Look at the data
-
-#Find the max discharge and charge power
-dispower <- max(avistadata$Power, na.rm=TRUE)
-chgpower <- min(avistadata$Power, na.rm=TRUE)
 #Choose conditions to count as taper power
-taperhigh <- 0.95
+taperhigh <- 0.975
 taperlow <- 0.05
-dispower
-chgpower
+dispower <- max(avistadata$Power)
+chgpower <- min(avistadata$Power)
 avistadata$State <- avistadata$Power %>% sapply(FUN = function(x) (abs(x) > taperlow*dispower+0)*sign(x))
-avistadata$StChange <- c(0,abs(diff(avistadata$State)))
+#avistadata$StChange <- c(0,abs(diff(avistadata$State)))
+avistadata$StChange <- c(0,1*(diff(avistadata$State)!=0))
 avistadata$Index <- cumsum(avistadata$StChange)
-avistadata$OCV <- 1.4176*avistadata$SOC+743.91
-avistadata$InvEff <- (avistadata$ConPower/as.numeric(avistadata$InverterPower))^(avistadata$State)
-if("Voltage" %in% colnames(avistadata)) {
-  avistadata$DCEff <- (avistadata$Voltage/avistadata$OCV)^(avistadata$State)
-  avistadata$TotEff <- avistadata$DCEff*avistadata$InvEff
-  }
 avistadata$PowerSum <- cumsum(avistadata$Power)*10/60/60/1000
-disvoltage <- avistadata[avistadata$State == 1 & avistadata$Power > dispower*taperhigh,]
-chgvoltage <- avistadata[avistadata$State == -1 & avistadata$Power < chgpower*taperhigh,]
-
+#disvoltage <- avistadata[avistadata$State == 1 & avistadata$Power > dispower*taperhigh,]
+#chgvoltage <- avistadata[avistadata$State == -1 & avistadata$Power < chgpower*taperhigh,]
+disvoltage <- avistadata[avistadata$State == 1,]
+chgvoltage <- avistadata[avistadata$State == -1,]
 cycles <- avistadata %>% group_by(Index)
-summary <- cycles %>% summarize(Start=min(Time), St=head(State,n=1), Energy = sum(Power)*10/60/60/1000, ConstEnergy = sum(Power[abs(Power)>(dispower*taperhigh)])*10/60/60/1000, TaperEnergy=Energy-ConstEnergy,MaxPower = max(abs(Power))/1000, TaperStart=max(SOC[Power<dispower*taperhigh]),SOCMin=min(SOC),SOCMax=max(SOC),DOD=SOCMax-SOCMin, Duration = max(Hours)-min(Hours),AvgTemp=mean(Temp))
+peaks <- summarize(cycles,Peak = max(abs(Power)),minSOC = min(SOC), maxSOC = max(SOC), DOD=maxSOC-minSOC)
+avistadata$Peak <- 0
+avistadata$DOD <- 0
+for(i in 1:nrow(avistadata)){
+  avistadata$Peak[i] <- peaks$Peak[avistadata$Index[i]==peaks$Index]*avistadata$State[i]
+  avistadata$DOD[i] <- peaks$DOD[avistadata$Index[i]==peaks$Index]
+}
+avistadata$PeakFrac <- avistadata$Power/avistadata$Peak
+disvoltage <- avistadata[avistadata$State == 1 & avistadata$PeakFrac > taperhigh & avistadata$DOD>0.15,]
+chgvoltage <- avistadata[avistadata$State == -1 & avistadata$PeakFrac > taperhigh & avistadata$DOD>0.15,]
+summary <- cycles %>% summarize(Start=min(Time), St=head(State,n=1), Energy = sum(Power)*10/60/60/1000,Peak = max(abs(Power)), TaperStart=max(SOC[Power<dispower*taperhigh]),SOCMin=min(SOC),SOCMax=max(SOC),DOD=SOCMax-SOCMin, Duration = max(Hours)-min(Hours),AvgTemp=mean(Temp))
 summary <- filter(summary, DOD>0 & St != 0)
 for(i in 1:nrow(disvoltage)){
   disvoltage$Elapsed[i] <- disvoltage$Hours[i]-head(disvoltage[disvoltage$Index == disvoltage$Index[i],]$Hours,n=1)
@@ -70,12 +70,32 @@ for(i in 1:nrow(chgvoltage)){
   chgvoltage$TimeRemaining[i] <- -chgvoltage$Hours[i]+tail(chgvoltage[chgvoltage$Index == chgvoltage$Index[i],]$Hours,n=1)
   chgvoltage$Energy[i] <- chgvoltage$PowerSum[i]-head(chgvoltage[chgvoltage$Index == chgvoltage$Index[i],]$PowerSum,n=1)
   chgvoltage$EnergyRemaining[i] <- -chgvoltage$PowerSum[i]+tail(chgvoltage[chgvoltage$Index == chgvoltage$Index[i],]$PowerSum,n=1)
-
+}
+chgvoltage <- chgvoltage[!is.na(chgvoltage$Index),]
+indexes <- unique(chgvoltage$Index)
+parameters<-NULL
+for(i in 1:length(indexes)){
+  curve <- chgvoltage[chgvoltage$Index==indexes[i],c("SOC","Elapsed","Power","Temp","Time","DOD")]
+  y<-curve$Elapsed
+  x<-curve$SOC
+  smoothed <- lm(y~poly(x,3,raw=TRUE))
+  curve$dSOCdt <- 1/(3*smoothed$coefficients[[4]]*curve$SOC^2+2*smoothed$coefficients[[3]]*curve$SOC+smoothed$coefficients[[2]])
+  y<-curve$dSOCdt
+  a<-0.1
+  b<-0.01
+  c<--0.5
+  model <- nls(log(curve$dSOCdt) ~ log(a)+c*log(curve$SOC-b),data=curve[,c("SOC","dSOCdt")],upper=c(1000,min(x)-.001,0),lower=c(0,0,-1),start=c(a=a,b=b,c=c),algorithm="port",control = nls.control(warnOnly = TRUE))
+  a<- model$m$getAllPars()["a"]
+  b<- model$m$getAllPars()["b"]
+  c<- model$m$getAllPars()["c"]
+  parameters <- rbind(parameters,list(head(curve$Time,1),indexes[i],mean(curve$Power),mean(curve$Temp),a,b,c))
   }
-#Make a data table for points where power is tapering
-distaper <- avistadata[avistadata$Power<(dispower*taperhigh) & avistadata$Power>(dispower*taperlow) & avistadata$SOC < 80,]
+# Make a data table for points where power is tapering
+distaper <- avistadata[avistadata$PeakFrac<taperhigh & avistadata$Power>0 & avistadata$SOC < 0.80,]
+chgtaper <- avistadata[avistadata$PeakFrac<taperhigh & avistadata$Power<0 & avistadata$SOC > 0.80,]
 #Output the power taper to csv file
 distaper <- distaper %>% group_by(Index)
+chgtaper <- chgtaper %>% group_by(Index)
 tapertimes <- summarize(distaper,Start=min(Hours))$Start
 taperenergies <- summarize(distaper,Energy=min(PowerSum))$Energy
 distaper$Elapsed <- 0
@@ -93,11 +113,15 @@ sheet <- addWorksheet(wb, sheetName = "Cycle Summary")
 writeDataTable(wb, sheet, summary)
 sheet <- addWorksheet(wb, sheetName = "Taper Summary")
 writeDataTable(wb, sheet, tapersummary)
-sheet <- addWorksheet(wb, sheetName = "Tapers")
+sheet <- addWorksheet(wb, sheetName = "Dis Tapers")
 writeDataTable(wb, sheet, distaper)
+sheet <- addWorksheet(wb, sheetName = "Chg Tapers")
+writeDataTable(wb, sheet, chgtaper)
 sheet <- addWorksheet(wb, sheetName = "Discharge Periods")
 writeDataTable(wb, sheet, disvoltage)
 sheet <- addWorksheet(wb, sheetName = "Charge Periods")
 writeDataTable(wb, sheet, chgvoltage)
+sheet <- addWorksheet(wb, sheetName = "RawData")
+writeDataTable(wb, sheet, avistadata)
 saveWorkbook(wb, filename, overwrite = TRUE)
  
