@@ -56,7 +56,7 @@ disvoltage <- avistadata[avistadata$State == 1,]
 chgvoltage <- avistadata[avistadata$State == -1,]
 avistadata <- group_by(avistadata,Index)
 avistadata <- mutate(avistadata,Peak=max(abs(Power))*State,PeakFrac=Power/Peak)
-avistadata <- filter(avistadata, State != 0, PeakFrac > taperhigh,SOC < 0.90)
+avistadata <- filter(avistadata, State != 0, PeakFrac > taperhigh)
 avistadata <- mutate(avistadata,DOD=max(SOC)-min(SOC))
 disvoltage <- filter(avistadata,State == 1, DOD > 0.30)
 chgvoltage <- filter(avistadata,State == -1, DOD > 0.30)
@@ -68,6 +68,7 @@ chgvoltage <- group_by(chgvoltage,Index)
 chgvoltage <- mutate(chgvoltage, Elapsed = Hours - min(Hours),TimeRemaining=max(Hours)-Hours,Energy=PowerSum-head(PowerSum),EnergyRemaining=tail(PowerSum)-PowerSum)
 
 chgsummary <- chgvoltage %>% summarize(Start=min(Time), St=head(State,n=1), Energy = sum(Power)*10/60/60/1000,Peak = max(abs(Power))/1000, TaperStart=max(SOC[Power<dispower*taperhigh]),SOCMin=min(SOC),SOCMax=max(SOC),DOD=SOCMax-SOCMin, Duration = max(Hours)-min(Hours),AvgTemp=mean(Temp))
+chgsummary$Peak[chgsummary$Peak==316 | chgsummary$Peak==265 | chgsummary$Peak==314 | chgsummary$Peak==315]=chgsummary$Peak[chgsummary$Peak==316 | chgsummary$Peak==265 | chgsummary$Peak==314 | chgsummary$Peak==315]*2
 fitted_models <- chgvoltage %>% group_by(Index) %>% do(model = smooth.spline(.$Elapsed ~ .$SOC))
 predictions <- lapply(fitted_models$model,predict,deriv=1)
 predictions <- lapply(predictions,as.data.frame)
@@ -85,6 +86,7 @@ sheet <- addWorksheet(chgwb, sheetName = "Charge Summary")
 nonlinearpredicted <- NULL
 generalmodel <- NULL
 writeDataTable(chgwb, sheet, chgsummary)
+#dev.off()
 for(i in 1:length(Indexes)){
   plot(fitted_models$model[[i]]$x,fitted_models$model[[i]]$yin,xlab="SOC",ylab="Elapsed Time",xlim=c(0,1),ylim=c(0,10),main=chgsummary$Start[i])
   lines(curves[[i]],col=2,lwd=2)
@@ -126,14 +128,18 @@ dissummary <- cbind(dissummary,parameters)
 diswb <- createWorkbook()
 sheet <- addWorksheet(diswb, sheetName = "Disharge Summary")
 writeDataTable(diswb, sheet, dissummary)
+#dev.off()
 for(i in 1:length(Indexes)){
-  plot(fitted_models$model[[i]]$x,fitted_models$model[[i]]$yin,xlab="SOC",ylab="Elapsed Time",xlim=c(0,1),ylim=c(0,10),main=chgsummary$Start[i])
+  plot(fitted_models$model[[i]]$x,fitted_models$model[[i]]$yin,xlab="SOC",ylab="Elapsed Time",xlim=c(0,1),ylim=c(0,10),main=dissummary$Start[i])
   lines(curves[[i]],col=2,lwd=2)
   sheet <- addWorksheet(diswb,sheetName=dissummary$Index[i])
   writeDataTable(diswb, sheet, dissummary[i,])
   insertPlot(diswb, sheet, 2, width = 5, height = 4, fileType = "png", units = "in",xy=c(1,3))
   title <- paste(round(dissummary$Peak[i],-1), " kW ", round(dissummary$AvgTemp[i]), " C")
-  plot(predictions[[i]],xlim=c(0,1),ylim=c(0,1),col=1,main=title)
+  plotname <- paste("displot_",dissummary$Index[i],".png")
+  mypath <- file.path("C:","Users","craw038","My Documents", "DischargeAnimation",plotname)
+  #png(mypath)
+  plot(predictions[[i]],xlim=c(0,1),ylim=c(0,0.5),col=1,main=title,xlab="SOC",ylab=expression('dSOC/dt (h'^-1*')'))
   nonlinearpredicted$x <- seq(dissummary$SOCMin[i],dissummary$SOCMax[i],by=0.01)
   nonlinearpredicted$y <- parameters[i,1]*(nonlinearpredicted$x-parameters[i,2])^(parameters[i,3])
   lines(nonlinearpredicted,col=2,lwd=2)
@@ -145,6 +151,7 @@ for(i in 1:length(Indexes)){
   lines(generalmodel,col=4,lwd=2)
   #lines(disvoltage$SOC[disvoltage$Index==Indexes[i]],disvoltage$PeakFrac[disvoltage$Index==Indexes[i]],col=3)
   insertPlot(diswb, sheet, 2, width = 5, height = 4, fileType = "png", units = "in",xy=c(9,3))
+  #dev.off()
 }
 filename <- paste(gsub(".csv", "", fname)," Discharge Summary.xlsx")
 saveWorkbook(diswb, filename, overwrite = TRUE)
